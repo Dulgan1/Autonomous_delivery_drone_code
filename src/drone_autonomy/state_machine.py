@@ -18,10 +18,37 @@ ALLOWED_TRANSITIONS: dict[LandingState, set[LandingState]] = {
     LandingState.ABORT: {LandingState.HOLD},
     LandingState.LAND: {LandingState.HOLD, LandingState.ABORT},
 }
+"""States that each state is allowed to enter.
+
+The state machine raises an error if code tries to take any other path. This
+keeps future changes from accidentally skipping a safety step.
+"""
 
 
 @dataclass(frozen=True)
 class LandingConfig:
+    """Limits and wait times used by :class:`LandingStateMachine`.
+
+    All values are deliberately small defaults for simulation. They must be
+    reviewed and tuned with a real safety process before any hardware use.
+
+    Attributes:
+        takeoff_altitude_m: Requested takeoff height in metres.
+        takeoff_settle_s: Time to wait after the takeoff request.
+        takeoff_timeout_s: Maximum time allowed in TAKEOFF.
+        search_timeout_s: Maximum time allowed in SEARCH.
+        acquisition_dwell_s: Time a target must stay valid before ALIGN.
+        acquisition_timeout_s: Maximum time allowed in TARGET_ACQUIRED.
+        alignment_dwell_s: Time a target must stay centered before DESCEND.
+        alignment_timeout_s: Maximum time allowed in ALIGN.
+        target_reacquire_timeout_s: Time allowed to find a lost target again.
+        descent_timeout_s: Maximum time allowed in DESCEND.
+        final_land_altitude_m: Altitude at which LAND may be requested.
+        center_error_limit: Largest allowed image error for “centered”.
+        lateral_gain: Converts image error into a small guidance request.
+        max_image_speed: Largest allowed image-guidance request.
+        descent_rate_mps: Requested downward speed during DESCEND.
+    """
     takeoff_altitude_m: float = 2.0
     takeoff_settle_s: float = 2.0
     takeoff_timeout_s: float = 15.0
@@ -43,6 +70,13 @@ class LandingStateMachine:
     """Uses fresh targets and sends only small, high-level requests."""
 
     def __init__(self, target_provider: TargetProvider, vehicle: VehicleInterface, config: LandingConfig = LandingConfig()):
+        """Create the state machine.
+
+        Args:
+            target_provider: Supplies the latest CV target message.
+            vehicle: Receives safe high-level action requests.
+            config: Limits and timeouts for this landing attempt.
+        """
         self.target_provider = target_provider
         self.vehicle = vehicle
         self.config = config
@@ -53,11 +87,33 @@ class LandingStateMachine:
         self.transitions: list[tuple[LandingState, LandingState, str]] = []
 
     def start(self, now_s: float) -> None:
+        """Start an attempt by moving from IDLE to TAKEOFF.
+
+        Args:
+            now_s: Current simulation or monotonic-clock time in seconds.
+
+        Raises:
+            RuntimeError: If the machine is not currently IDLE.
+        """
         if self.state != LandingState.IDLE:
             raise RuntimeError("landing autonomy can only start from IDLE")
         self._transition(LandingState.TAKEOFF, now_s, "operator_start")
 
     def update(self, now_s: float, *, manual_override: bool = False, abort: bool = False) -> LandingState:
+        """Run one safety check and return the current state.
+
+        Manual override always wins and immediately requests HOLD. An explicit
+        abort moves to ABORT. Otherwise, this checks the latest target, timers,
+        and altitude, then sends only the action allowed by the current state.
+
+        Args:
+            now_s: Current simulation or monotonic-clock time in seconds.
+            manual_override: True when the operator wants immediate control.
+            abort: True when the operator wants to stop the landing attempt.
+
+        Returns:
+            The state after this update.
+        """
         if manual_override:
             if self.state != LandingState.HOLD:
                 self._transition(LandingState.HOLD, now_s, "manual_override")
@@ -130,6 +186,16 @@ class LandingStateMachine:
         return self.state
 
     def _transition(self, state: LandingState, now_s: float, reason: str) -> None:
+        """Change state after checking the allowed-transition table.
+
+        Args:
+            state: State to enter.
+            now_s: Time the state begins.
+            reason: Short machine-readable explanation for logs and tests.
+
+        Raises:
+            RuntimeError: If this state change is not allowed.
+        """
         old = self.state
         if state not in ALLOWED_TRANSITIONS[old]:
             raise RuntimeError(f"unsafe transition refused: {old.value} -> {state.value}")
@@ -144,11 +210,16 @@ class LandingStateMachine:
             self.vehicle.land()
 
     def _guide_laterally(self, target: VisualTarget) -> None:
+        """Request a capped image-based correction toward ``target``.
+
+        The result is not a real-world position or body-frame velocity.
+        """
         cap = self.config.max_image_speed
         x = max(-cap, min(cap, target.horizontal_error * self.config.lateral_gain))
         y = max(-cap, min(cap, target.vertical_error * self.config.lateral_gain))
         self.vehicle.velocity(VelocitySetpoint(x, y))
 
     def _centered(self, target: VisualTarget) -> bool:
+        """Return True when the target is close enough to image centre."""
         limit = self.config.center_error_limit
         return abs(target.horizontal_error) <= limit and abs(target.vertical_error) <= limit

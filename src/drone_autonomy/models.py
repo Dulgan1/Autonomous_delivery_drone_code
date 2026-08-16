@@ -6,6 +6,20 @@ from math import isfinite
 
 
 class LandingState(str, Enum):
+    """Possible stages of one landing attempt.
+
+    Attributes:
+        IDLE: Autonomy is not running.
+        TAKEOFF: A takeoff request has been made.
+        SEARCH: Waiting for a usable visual target.
+        TARGET_ACQUIRED: Checking that a new target stays usable.
+        ALIGN: Asking for small image-based corrections.
+        DESCEND: Asking for a slow descent while the target remains usable.
+        TARGET_LOST: Holding because the target disappeared or became invalid.
+        HOLD: Holding because the operator took manual control.
+        ABORT: Holding because a safety rule stopped the landing attempt.
+        LAND: A land request has been made.
+    """
     IDLE = "idle"
     TAKEOFF = "takeoff"
     SEARCH = "search"
@@ -24,6 +38,16 @@ class VisualTarget:
 
     The errors describe where the target is in the image, not its real-world
     position. A target must be both stable and visible before it is used.
+
+    Attributes:
+        track_id: ID supplied by the CV tracker.
+        target_point: Target centre in image pixels as ``(x, y)``.
+        horizontal_error: Target position from left (-1) to right (+1).
+        vertical_error: Target position from top (-1) to bottom (+1).
+        normalized_radius: Apparent target size in the image; not metres.
+        marker_confidence: CV quality value from 0 to 1; not a probability.
+        stable: True only after the CV tracker considers the target consistent.
+        visible: True only when the target is seen in the current frame.
     """
 
     track_id: int | str
@@ -37,6 +61,11 @@ class VisualTarget:
 
     @property
     def usable(self) -> bool:
+        """Return True when this is safe to use as a fresh visual measurement.
+
+        The target must be stable, visible, finite, and within the documented
+        normalized ranges. Old tracked targets and malformed data return False.
+        """
         values = (
             *self.target_point,
             self.horizontal_error,

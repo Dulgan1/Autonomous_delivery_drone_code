@@ -44,3 +44,23 @@ When the target is lost, the drone asks to hold right away. It can only go back 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+## Try a fake flight
+
+`SimulationRunner` lets you play a list of fake moments through the state
+machine. Each moment can include a target, altitude, manual override, or
+abort. It returns a timeline showing the state, why it changed, and the action
+requested. It does not use a camera or control a drone.
+
+```python
+from drone_autonomy import LandingConfig, LandingStateMachine, ScenarioStep, SimulationRunner
+from drone_autonomy.mocks import MockTargetProvider, MockVehicle
+
+targets = MockTargetProvider()
+vehicle = MockVehicle()
+machine = LandingStateMachine(targets, vehicle, LandingConfig(takeoff_settle_s=0))
+timeline = SimulationRunner(machine, targets, vehicle).run([
+    ScenarioStep(time_s=0, altitude_m=1.0),
+    # Add more steps with a VisualTarget to simulate seeing the marker.
+])
+```
