@@ -4,9 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drone-autonomy"
-version = "0.1.0"
-description = "Hardware-independent, safety-first landing autonomy foundation"
+version = "0.2.0"
+description = "Safety-first drone delivery autonomy with a laptop simulation mode and a Raspberry Pi hardware mode"
 requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed on the Raspberry Pi. Simulation mode has no dependencies at all.
+hardware = [
+    "pymavlink>=2.4.37",
+    "pigpio>=1.78",
+]
+
+[project.scripts]
+drone-autonomy = "drone_autonomy.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

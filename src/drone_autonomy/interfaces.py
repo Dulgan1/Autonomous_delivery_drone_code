@@ -28,12 +28,16 @@ class VehicleTelemetry:
 
     Attributes:
         altitude_m: Height above the landing surface in metres. This value is
-            supplied by a future vehicle adapter or by a mock in tests.
+            supplied by a vehicle adapter or by a mock in tests.
         telemetry_fresh: True when Pixhawk telemetry is recent.
         position_hold_ready: True when Pixhawk can safely hold position.
         failsafe_active: True when Pixhawk has raised a failsafe.
         battery_remaining_percent: Battery percentage reported by Pixhawk.
         payload_released: True only when a future payload sensor confirms release.
+        armed: True when the flight controller reports the vehicle is armed. A
+            real adapter must report the truth; the permissive default exists
+            only so mock-based tests stay short.
+        flight_mode: Flight-controller mode name, for logging and diagnostics.
     """
 
     altitude_m: float = 0.0
@@ -42,6 +46,8 @@ class VehicleTelemetry:
     failsafe_active: bool = False
     battery_remaining_percent: float = 100.0
     payload_released: bool = False
+    armed: bool = True
+    flight_mode: str = "unknown"
 
 
 @dataclass(frozen=True)

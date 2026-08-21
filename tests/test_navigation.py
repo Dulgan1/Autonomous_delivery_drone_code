@@ -2,6 +2,7 @@ import unittest
 
 from drone_autonomy import GpsPosition, LandingConfig, LandingState, LandingStateMachine, NavigationReadings, VisualTarget
 from drone_autonomy.mocks import MockNavigationProvider, MockTargetProvider, MockVehicle
+from drone_autonomy.state_machine import ALLOWED_TRANSITIONS
 
 
 def readings(*, latitude=0.0, longitude=0.0, heading=0.0, side=5.0, top=5.0, bottom=1.0, fresh=True):
@@ -106,3 +107,39 @@ class GpsNavigationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReturnHomeReachabilityTests(unittest.TestCase):
+    """Any state that can still decide must be able to reach RETURN_HOME.
+
+    A mission health check that raises instead of acting is worse than one that
+    acts imperfectly, so this is checked directly rather than only through the
+    scenarios that happen to hit each path.
+    """
+
+    def test_every_deciding_state_may_return_home(self):
+        deciding = set(ALLOWED_TRANSITIONS) - {
+            LandingState.HOLD,
+            LandingState.ABORT,
+            LandingState.RETURN_HOME,
+        }
+        for state in deciding:
+            with self.subTest(state=state.value):
+                self.assertIn(LandingState.RETURN_HOME, ALLOWED_TRANSITIONS[state])
+
+    def test_losing_the_marker_before_the_drop_comes_home_instead_of_raising(self):
+        config = LandingConfig(
+            target_position=GpsPosition(0.0, 0.0),
+            target_reacquire_timeout_s=1.0,
+        )
+        targets = MockTargetProvider()
+        vehicle = MockVehicle()
+        navigation = MockNavigationProvider()
+        machine = LandingStateMachine(targets, vehicle, config, navigation)
+        machine.state = LandingState.TARGET_LOST
+        machine.state_since_s = 0.0
+
+        machine.update(5.0)
+
+        self.assertEqual(machine.state, LandingState.RETURN_HOME)
+        self.assertIn(("return_home", "target_reacquire_timeout"), vehicle.commands)

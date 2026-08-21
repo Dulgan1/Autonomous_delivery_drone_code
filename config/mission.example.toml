@@ -1,0 +1,98 @@
+# Configuration for a real flight on the Raspberry Pi.
+#
+# Copy this to config/mission.toml and edit it. Every value here is a starting
+# point for bench testing, not an approved flight value. The clearances and
+# speeds in particular must come from measurements on your own aircraft.
+
+loop_rate_hz = 10.0        # decision cycles per second
+log_dir = "logs"           # one JSON-lines file per flight
+terminal_linger_s = 10.0   # keep holding this long after the mission ends
+
+[mission]
+# Where the payload is going. Both values are required together.
+target_latitude_deg = 9.057000
+target_longitude_deg = 7.491000
+
+arrival_radius_m = 3.0            # close enough to the target to start searching
+search_altitude_m = 5.0           # height for GPS travel and grid search
+search_area_side_m = 10.0         # 10 m x 10 m search box around the target
+search_grid_spacing_m = 2.0       # distance between grid lines
+search_point_dwell_s = 2.0        # how long to look for the marker at each point
+search_timeout_s = 600.0          # total time allowed for the whole search
+mission_timeout_s = 1200.0        # total time allowed for the whole flight
+return_home_battery_percent = 40.0
+
+# Obstacle and clearance limits. MEASURE THESE ON YOUR AIRCRAFT.
+# HC-SR04 is unreliable on angled, soft, or wet surfaces and has a narrow beam.
+side_clearance_m = 2.0            # a forward step needs at least this much room
+top_clearance_m = 1.0             # climbing needs at least this much room above
+landing_distance_m = 0.30
+
+# Movement. Keep the first flights slow.
+forward_speed_mps = 0.25
+forward_step_s = 0.50
+heading_tolerance_deg = 10.0
+yaw_scan_offsets_deg = [0.0, -30.0, 30.0, -60.0, 60.0]
+
+# Waits before committing to something irreversible.
+takeoff_settle_s = 2.0
+acquisition_dwell_s = 0.5
+alignment_dwell_s = 1.0
+payload_alignment_dwell_s = 1.0
+target_reacquire_timeout_s = 2.0
+center_error_limit = 0.10
+
+require_armed = true              # refuse to start on a disarmed aircraft
+
+[mavlink]
+connection = "/dev/serial0"       # Pixhawk TELEM2; use "udpin:0.0.0.0:14540" for a PX4 simulator
+baud = 921600
+heartbeat_timeout_s = 2.0
+setpoint_rate_hz = 20.0           # PX4 drops Offboard below about 2 Hz
+offboard_priming_s = 1.0
+minimum_satellites = 8
+maximum_eph_m = 5.0
+
+# Leave both of these false until the matching manual work is finished.
+allow_arm = false                 # false means a human arms the aircraft
+allow_image_guidance = false      # false until the camera is calibrated to the body
+image_guidance_scale = 0.30
+
+[ultrasonic]
+# BCM pin numbers. Every echo line needs a level shifter or voltage divider:
+# HC-SR04 echo is 5 V and Raspberry Pi GPIO is 3.3 V.
+sample_rate_hz = 10.0
+median_window = 5
+stale_after_s = 0.5
+min_range_m = 0.03                # HC-SR04 blind zone
+max_range_m = 4.0                 # HC-SR04 useful limit
+stuck_sample_limit = 20
+echo_timeout_s = 0.04
+
+[ultrasonic.bottom]
+trigger_pin = 23
+echo_pin = 24
+
+[ultrasonic.side]
+trigger_pin = 17
+echo_pin = 27
+
+[ultrasonic.top]
+trigger_pin = 5
+echo_pin = 6
+
+[servo]
+# Payload release driven from a Pi GPIO pin through pigpio.
+# The servo needs its own regulated supply sharing ground with the Pi.
+pin = 18
+locked_us = 1000
+released_us = 2000
+release_hold_s = 1.5
+idle_pulse = true
+enabled = false                   # SAFETY INTERLOCK: leave false for all ground testing
+
+[cv]
+# The separate OpenCV project sends one JSON datagram per frame to this port.
+host = "127.0.0.1"
+port = 5601
+max_age_s = 0.5

@@ -51,6 +51,8 @@ class MockVehicle:
     failsafe_active: bool = False
     battery_remaining_percent: float = 100.0
     payload_released: bool = False
+    armed: bool = True
+    flight_mode: str = "mock"
     commands: list[tuple[str, object]] = field(default_factory=list)
 
     def telemetry(self) -> VehicleTelemetry:
@@ -62,6 +64,8 @@ class MockVehicle:
             failsafe_active=self.failsafe_active,
             battery_remaining_percent=self.battery_remaining_percent,
             payload_released=self.payload_released,
+            armed=self.armed,
+            flight_mode=self.flight_mode,
         )
 
     def takeoff(self, altitude_m: float) -> None:

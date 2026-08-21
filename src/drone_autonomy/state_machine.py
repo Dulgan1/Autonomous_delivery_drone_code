@@ -8,25 +8,31 @@ from .models import GpsPosition, LandingState, NavigationReadings, VisualTarget
 
 
 ALLOWED_TRANSITIONS: dict[LandingState, set[LandingState]] = {
-    LandingState.IDLE: {LandingState.PREFLIGHT, LandingState.TAKEOFF, LandingState.HOLD, LandingState.ABORT},
-    LandingState.PREFLIGHT: {LandingState.TAKEOFF, LandingState.HOLD, LandingState.ABORT},
-    LandingState.TAKEOFF: {LandingState.GPS_NAVIGATE, LandingState.SEARCH, LandingState.HOLD, LandingState.ABORT},
+    LandingState.IDLE: {LandingState.PREFLIGHT, LandingState.TAKEOFF, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
+    LandingState.PREFLIGHT: {LandingState.TAKEOFF, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
+    LandingState.TAKEOFF: {LandingState.GPS_NAVIGATE, LandingState.SEARCH, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.GPS_NAVIGATE: {LandingState.YAW_SCAN, LandingState.SEARCH_MOVE, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.YAW_SCAN: {LandingState.GPS_NAVIGATE, LandingState.SEARCH_MOVE, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.SEARCH_MOVE: {LandingState.YAW_SCAN, LandingState.SEARCH, LandingState.TARGET_ACQUIRED, LandingState.HOLD, LandingState.RETURN_HOME},
     LandingState.SEARCH: {LandingState.SEARCH_MOVE, LandingState.TARGET_ACQUIRED, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.TARGET_ACQUIRED: {LandingState.SEARCH, LandingState.ALIGN, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.ALIGN: {LandingState.DESCEND, LandingState.DROP_READY, LandingState.TARGET_LOST, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
-    LandingState.DESCEND: {LandingState.TARGET_LOST, LandingState.LAND, LandingState.HOLD, LandingState.ABORT},
+    LandingState.DESCEND: {LandingState.TARGET_LOST, LandingState.LAND, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.DROP_READY: {LandingState.ALIGN, LandingState.DROP_PAYLOAD, LandingState.TARGET_LOST, LandingState.HOLD, LandingState.RETURN_HOME},
     LandingState.DROP_PAYLOAD: {LandingState.RETURN_HOME, LandingState.HOLD},
-    LandingState.TARGET_LOST: {LandingState.ALIGN, LandingState.HOLD, LandingState.ABORT},
+    LandingState.TARGET_LOST: {LandingState.ALIGN, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.HOLD: {LandingState.ABORT},
     LandingState.ABORT: {LandingState.HOLD},
-    LandingState.LAND: {LandingState.HOLD, LandingState.ABORT},
+    LandingState.LAND: {LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME},
     LandingState.RETURN_HOME: {LandingState.HOLD},
 }
-"""The only state changes the program is allowed to make."""
+"""The only state changes the program is allowed to make.
+
+Every state that can still make a decision may reach ``RETURN_HOME``, because
+any mission health check can decide to come home from any of them. Leaving one
+of them out does not make the aircraft safer: it makes the safety check itself
+raise instead of acting.
+"""
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,8 @@ class LandingConfig:
     takeoff_settle_s: float = 2.0
     takeoff_timeout_s: float = 15.0
     search_timeout_s: float = 600.0
+    mission_timeout_s: float | None = None
+    require_armed: bool = True
     acquisition_dwell_s: float = 0.5
     acquisition_timeout_s: float = 3.0
     alignment_dwell_s: float = 1.0
@@ -91,6 +99,8 @@ class LandingStateMachine:
         self._active_navigation_goal: GpsPosition | None = None
         self._payload_centered_since_s: float | None = None
         self._payload_release_requested = False
+        self._mission_started_s: float | None = None
+        self._search_phase_since_s: float | None = None
         self.transitions: list[tuple[LandingState, LandingState, str]] = []
 
     def start(self, now_s: float) -> None:
@@ -99,6 +109,7 @@ class LandingStateMachine:
             raise RuntimeError("autonomy can only start from IDLE")
         if self.config.target_position is not None and self.navigation_provider is None:
             raise RuntimeError("a GPS target requires a navigation provider")
+        self._mission_started_s = now_s
         first = LandingState.PREFLIGHT if self.config.target_position else LandingState.TAKEOFF
         self._transition(first, now_s, "operator_start")
 
@@ -123,6 +134,19 @@ class LandingStateMachine:
             self._return_or_abort(now_s, "battery_low")
             return self.state
 
+        if (
+            self.config.mission_timeout_s is not None
+            and self._mission_started_s is not None
+            and self.state not in (LandingState.IDLE, LandingState.HOLD, LandingState.ABORT, LandingState.RETURN_HOME)
+            and now_s - self._mission_started_s > self.config.mission_timeout_s
+        ):
+            self._return_or_abort(now_s, "mission_timeout")
+            return self.state
+
+        if self._search_expired(now_s):
+            self._return_or_abort(now_s, "search_timeout")
+            return self.state
+
         target = self.target_provider.latest_target()
         visual_ok = target is not None and target.usable
         nav = self._navigation()
@@ -131,6 +155,8 @@ class LandingStateMachine:
         if self.state == LandingState.PREFLIGHT:
             if not telemetry.telemetry_fresh or not telemetry.position_hold_ready or telemetry.failsafe_active:
                 self._transition(LandingState.HOLD, now_s, "preflight_vehicle_not_ready")
+            elif self.config.require_armed and not telemetry.armed:
+                self._transition(LandingState.HOLD, now_s, "preflight_not_armed")
             elif telemetry.battery_remaining_percent <= self.config.return_home_battery_percent:
                 self._transition(LandingState.HOLD, now_s, "preflight_battery_low")
             elif not self._navigation_ok(nav):
@@ -162,7 +188,7 @@ class LandingStateMachine:
             if visual_ok:
                 self._acquired_since_s = now_s
                 self._transition(LandingState.TARGET_ACQUIRED, now_s, "fresh_stable_target")
-            elif elapsed > self.config.search_timeout_s:
+            elif self.config.target_position is None and elapsed > self.config.search_timeout_s:
                 self._return_or_abort(now_s, "search_timeout")
             elif self.config.target_position is not None and elapsed >= self.config.search_point_dwell_s:
                 self._next_search_point_or_return(now_s)
@@ -300,11 +326,25 @@ class LandingStateMachine:
         assert self.config.target_position is not None
         self._search_points = self._make_search_grid(self.config.target_position)
         self._search_index = 0
+        self._search_phase_since_s = now_s
         if not self._search_points:
             self._return_or_abort(now_s, "search_grid_empty")
             return
         self._active_navigation_goal = self._search_points[0]
         self._transition(LandingState.SEARCH_MOVE, now_s, "gps_target_reached")
+
+    def _search_expired(self, now_s: float) -> bool:
+        """Return True when the whole marker-search phase has run out of time.
+
+        The clock starts when the grid search begins and keeps running across
+        every grid point, so it is a real limit on the search as a whole rather
+        than a limit on one dwell.
+        """
+        return (
+            self._search_phase_since_s is not None
+            and self.state in (LandingState.SEARCH, LandingState.SEARCH_MOVE, LandingState.YAW_SCAN)
+            and now_s - self._search_phase_since_s > self.config.search_timeout_s
+        )
 
     def _next_search_point_or_return(self, now_s: float) -> None:
         """Move to the next grid point, or return home when all points were checked."""

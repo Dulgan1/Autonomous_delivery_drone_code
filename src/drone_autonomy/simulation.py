@@ -18,6 +18,10 @@ class ScenarioStep:
         altitude_m: Fake altitude given to the vehicle at this moment.
         manual_override: Whether the operator takes control at this moment.
         abort: Whether the operator stops the landing attempt at this moment.
+        battery_percent: Fake battery level, or None to leave it unchanged.
+        telemetry_fresh: Fake Pi-to-Pixhawk link health, or None to leave it.
+        failsafe_active: Fake Pixhawk failsafe flag, or None to leave it.
+        armed: Fake armed flag, or None to leave it unchanged.
     """
 
     time_s: float
@@ -26,6 +30,10 @@ class ScenarioStep:
     altitude_m: float = 0.0
     manual_override: bool = False
     abort: bool = False
+    battery_percent: float | None = None
+    telemetry_fresh: bool | None = None
+    failsafe_active: bool | None = None
+    armed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,14 @@ class SimulationRunner:
             if self.navigation is not None:
                 self.navigation.readings = step.navigation
             self.vehicle.altitude_m = step.altitude_m
+            if step.battery_percent is not None:
+                self.vehicle.battery_remaining_percent = step.battery_percent
+            if step.telemetry_fresh is not None:
+                self.vehicle.telemetry_fresh = step.telemetry_fresh
+            if step.failsafe_active is not None:
+                self.vehicle.failsafe_active = step.failsafe_active
+            if step.armed is not None:
+                self.vehicle.armed = step.armed
             command_count = startup_command_count if index == 0 else len(self.vehicle.commands)
             transition_count = startup_transition_count if index == 0 else len(self.machine.transitions)
             state = self.machine.update(
