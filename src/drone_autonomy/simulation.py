@@ -2,8 +2,8 @@
 
 from dataclasses import dataclass
 
-from .mocks import MockTargetProvider, MockVehicle
-from .models import LandingState, VisualTarget
+from .mocks import MockNavigationProvider, MockTargetProvider, MockVehicle
+from .models import LandingState, NavigationReadings, VisualTarget
 from .state_machine import LandingStateMachine
 
 
@@ -14,6 +14,7 @@ class ScenarioStep:
     Attributes:
         time_s: Time of this step in seconds. Steps must be in time order.
         target: Fake CV target at this moment, or None when no target is seen.
+        navigation: Fake GPS, heading, and ultrasonic data at this moment.
         altitude_m: Fake altitude given to the vehicle at this moment.
         manual_override: Whether the operator takes control at this moment.
         abort: Whether the operator stops the landing attempt at this moment.
@@ -21,6 +22,7 @@ class ScenarioStep:
 
     time_s: float
     target: VisualTarget | None = None
+    navigation: NavigationReadings | None = None
     altitude_m: float = 0.0
     manual_override: bool = False
     abort: bool = False
@@ -46,17 +48,19 @@ class SimulationRecord:
 class SimulationRunner:
     """Feed scripted inputs to a state machine and keep a simple timeline."""
 
-    def __init__(self, machine: LandingStateMachine, targets: MockTargetProvider, vehicle: MockVehicle):
+    def __init__(self, machine: LandingStateMachine, targets: MockTargetProvider, vehicle: MockVehicle, navigation: MockNavigationProvider | None = None):
         """Create a runner around one mock state machine.
 
         Args:
             machine: Landing state machine to exercise.
             targets: Mock target provider whose target is changed per step.
             vehicle: Mock vehicle whose altitude is changed per step.
+            navigation: Optional mock GPS and ultrasonic source.
         """
         self.machine = machine
         self.targets = targets
         self.vehicle = vehicle
+        self.navigation = navigation
 
     def run(self, steps: list[ScenarioStep]) -> list[SimulationRecord]:
         """Start autonomy, run steps in time order, and return a timeline.
@@ -75,13 +79,17 @@ class SimulationRunner:
         if self.machine.state != LandingState.IDLE:
             raise RuntimeError("simulation must start while the machine is IDLE")
 
+        startup_command_count = len(self.vehicle.commands)
+        startup_transition_count = len(self.machine.transitions)
         self.machine.start(steps[0].time_s)
         records: list[SimulationRecord] = []
-        for step in steps:
+        for index, step in enumerate(steps):
             self.targets.target = step.target
+            if self.navigation is not None:
+                self.navigation.readings = step.navigation
             self.vehicle.altitude_m = step.altitude_m
-            command_count = len(self.vehicle.commands)
-            transition_count = len(self.machine.transitions)
+            command_count = startup_command_count if index == 0 else len(self.vehicle.commands)
+            transition_count = startup_transition_count if index == 0 else len(self.machine.transitions)
             state = self.machine.update(
                 step.time_s,
                 manual_override=step.manual_override,
